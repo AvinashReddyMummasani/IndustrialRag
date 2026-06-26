@@ -77,13 +77,13 @@ class SemanticParser(BaseParser):
             
             # 2. Execute Extraction
             if self.htr_model:
-                # Inject custom vision model/pipeline if provided
+                # Inject custom vision model/pipeline (Later Intilize it)
                 raw_extracted_text = self.htr_model(img)
                 if isinstance(raw_extracted_text, list) and len(raw_extracted_text) > 0:
                     raw_extracted_text = raw_extracted_text[0].get('generated_text', '')
             else:
                 # Default to system Tesseract
-                # PSM 3: Fully automatic page segmentation, but no OSD (standard for scanned docs)
+                
                 custom_config = r'--oem 3 --psm 3'
                 raw_extracted_text = pytesseract.image_to_string(img, config=custom_config)
                 

@@ -60,6 +60,7 @@ class VisionParser(BaseParser):
         """Executes local OCR to capture explicit text (Equipment Tags, Line Numbers)."""
         try:
             # PSM 11 is optimized for sparse text scattered across a diagram
+            # It Automatically uses best ocr --oem 3 and --psm 11 sparse text
             custom_config = r'--oem 3 --psm 11'
             text = pytesseract.image_to_string(image, config=custom_config)
             return text.strip()
@@ -76,6 +77,7 @@ class VisionParser(BaseParser):
         
         for tag in set(found_tags):
             prefix = tag.split('-')[0]
+            # Assuming currently diagram contain only Valve, Pump or Other equipments
             entity_type = "VALVE" if prefix == "V" else "PUMP" if prefix == "P" else "EQUIPMENT"
             entities.append(ExtractedEntity(entity_id=tag, entity_type=entity_type))
             
@@ -97,7 +99,7 @@ class VisionParser(BaseParser):
             if pil_image.mode in ("RGBA", "P"):
                 pil_image = pil_image.convert("RGB")
                 
-            pil_image.save(buffered, format="JPEG", quality=85)
+            pil_image.save(buffered, format="JPEG", quality=85) # Convert into file type
             img_str = base64.b64encode(buffered.getvalue()).decode("utf-8")
             
             prompt_text = (
@@ -156,10 +158,21 @@ class VisionParser(BaseParser):
             
             logger.info(f"[{document_id}] Vision extraction complete. Entities: {len(entities)}, Relationships: {len(relationships)}")
             
+            embeddings = []
+            chunks = self.chunk_text(raw_text) 
+            # Safely execute embeddings utilizing the BaseParser's stored model
+            
+            if hasattr(self, 'embedding_model') and self.embedding_model and chunks:
+                try:
+                    # Using standard sentence-transformers execution
+                    embeddings = self.embedding_model.encode(chunks).tolist()
+                except Exception as e:
+                    logger.error(f"[{document_id}] Failed to generate text embeddings: {e}")
             return ParsedDocumentData(
                 document_id=document_id,
                 route_taken="VISION_TOPOLOGICAL",
                 raw_text=raw_text,
+                embeddings=embeddings,
                 entities=entities,
                 relationships=relationships
             )

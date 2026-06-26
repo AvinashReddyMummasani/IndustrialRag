@@ -36,7 +36,7 @@ class DocumentOrchestrator:
         
         results = [None] * total_pages
 
-        # Creates max_workers threads to run concurrently
+        # Creates max_workers threads and parse pages concurrently
         with ThreadPoolExecutor(max_workers=self.max_workers) as executor:
             futures = {
                 executor.submit(self._route_and_parse, file_path, i): i 
