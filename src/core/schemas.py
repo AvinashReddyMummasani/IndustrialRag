@@ -139,3 +139,24 @@ class QueryResponse(BaseModel):
         default_factory=list,
         description="List of verified document IDs or filenames providing provenance for the answer."
     )
+
+class APIWebResponse(BaseModel):
+    status: str
+    report: str
+
+class AuditResponse(BaseModel):
+    status: str
+    report: str
+
+class AuditRequest(BaseModel):
+    asset_id: str = Field(..., description="Fuzzy or explicit operational equipment tag.")
+    asset_type: str = Field(..., description="Classification of the equipment.")
+    target_standard: str = Field(..., description="Regulatory framework (e.g., 'OISD-144').")
+
+
+class AuditReportSchema(BaseModel):
+    executive_summary: str = Field(description="High-level summary of the audit.")
+    regulatory_baseline_clauses: List[str] = Field(description="Specific legal thresholds found.")
+    operational_deviations: List[str] = Field(description="Explicit list of deviations. Empty if none.")
+    is_compliant: bool = Field(description="True if 0 deviations, False otherwise.")
+    evidence_references: List[str] = Field(description="DB primary keys or file names proving the status.")

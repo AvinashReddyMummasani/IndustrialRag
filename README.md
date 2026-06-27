@@ -5,16 +5,25 @@
 4. Learn how pytesseract works.
 5. Once the type of P&IDs are finalized change _extract_entities_heurisitc 
    from vision_parser.
-6. Make vision_client model structured for now Later Try to use Yolo pipeline. ***
+6. Make vision_client model structured for now Later Try to use Yolo pipeline. *********
 7. Change _extract_topological_relationships in vision_parser it extract both entities, 
    relatioins and little summary (chunk it too and make embeddings) with structured vision_client. ***
 8. In semantic_parser try to use custom_model instead of pyteseract (Can be used in VisionParer too).
-9. 
+9. Make a own chunking method for spreadsheets to make it row aware.
+10. Check spreadsheets, archive parser again. ***********
+11. Learn rapidfuzz.
+12. If possible in sql_tools/_fetch_neo4j_procedures_sync change exact_match.
+13. While building Graph strict enforce it to have schema required for compliance agent
+    and rca agent. *********
 
 ## Check Complete
 1. Emails
 2. Visiion Parser
-
+3. Semantic parser
+4. Digital_text paraser
+5. ingestion_router
+6. file classifier
+7. rca_agent_router and related.
 
 
 ## Notes
@@ -35,3 +44,5 @@
 4. Vision parser accepts imgs, scanned images.
 5. Eamil parser accepts emails, messages.
 6. Semantic parser handles scanned text.
+7. digital_text_parser can parser typed pdfs.
+8. Document parser order is vision-> semantic->digital_text_parser.

@@ -1,18 +1,14 @@
 import json
 import logging
+import asyncio
 from langchain_core.tools import tool
 from src.db.postgres_client import PostgresPool
 from src.db.neo4j_client import Neo4jClient
 
 logger = logging.getLogger(__name__)
 
-@tool
-def get_historical_asset_incidents(asset_id: str, scan_limit: int = 5) -> str:
-    """
-    Queries the PostgreSQL relational database to fetch structured engineering failure codes,
-    downtime impact values, and prior repair context for a specific asset token.
-    Use this to look up specific structural anomalies across timelines.
-    """
+def _fetch_postgres_incidents_sync(asset_id: str, scan_limit: int) -> str:
+    """Synchronous core for Postgres execution."""
     query = """
         SELECT work_order_id, failure_code, downtime_hours, technician_notes, execution_date
         FROM maintenance_history
@@ -45,11 +41,19 @@ def get_historical_asset_incidents(asset_id: str, scan_limit: int = 5) -> str:
         return f"Error executing relational search execution sequence: {str(e)}"
 
 @tool
-def extract_knowledge_graph_oem_procedures(asset_type: str, observed_symptom: str) -> str:
+async def get_historical_asset_incidents(asset_id: str, scan_limit: int = 5) -> str:
     """
-    Traverses the Neo4j Knowledge Graph to locate technical operational manuals, cross-referenced documentation,
-    and manufacturer guidelines linked with specified asset systems and systemic symptoms.
+    Queries the PostgreSQL relational database to fetch structured engineering failure codes,
+    downtime impact values, and prior repair context for a specific asset token.
+    Use this to look up specific structural anomalies across timelines.
     """
+    # Offload the synchronous DB call to a thread pool to prevent blocking the async event loop
+    return await asyncio.to_thread(_fetch_postgres_incidents_sync, asset_id, scan_limit)
+
+def _fetch_neo4j_procedures_sync(asset_type: str, observed_symptom: str) -> str:
+    """Synchronous core for Neo4j execution."""
+
+    # User has to type exact symptom (Try to change it)
     cypher_query = """
         MATCH (a:AssetType {name: $asset_type})-[:HAS_DOCUMENT]->(d:Document)
         MATCH (d)-[:CONTAINS_PROCEDURE]->(p:Procedure)
@@ -57,9 +61,7 @@ def extract_knowledge_graph_oem_procedures(asset_type: str, observed_symptom: st
         RETURN p.resolution_steps AS steps, d.filename AS source_file
         LIMIT 3
     """
-    
     try:
-        # Utilize the strictly typed read method we just added
         results = Neo4jClient.execute_read_query(
             cypher_query, 
             parameters={"asset_type": asset_type, "observed_symptom": observed_symptom}
@@ -72,9 +74,16 @@ def extract_knowledge_graph_oem_procedures(asset_type: str, observed_symptom: st
             f"Source: {record['source_file']} | Resolution: {record['steps']}"
             for record in results
         ]
-        
         return "\n\n".join(extracted_records)
-        
     except Exception as e:
         logger.error(f"Graph database query tool failure: {e}")
         return f"Error executing Graph Network traversal pattern: {str(e)}"
+
+@tool
+async def extract_knowledge_graph_oem_procedures(asset_type: str, observed_symptom: str) -> str:
+    """
+    Traverses the Neo4j Knowledge Graph to locate technical operational manuals, cross-referenced documentation,
+    and manufacturer guidelines linked with specified asset systems and systemic symptoms.
+    """
+    # Offload the synchronous Graph call to a thread pool
+    return await asyncio.to_thread(_fetch_neo4j_procedures_sync, asset_type, observed_symptom)

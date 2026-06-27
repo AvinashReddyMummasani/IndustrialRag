@@ -1,153 +1,185 @@
 import os
 import json
 import logging
-import pandas as pd
 from pathlib import Path
-from typing import Dict, Any
+from typing import Dict, List, Optional, Any
+import pandas as pd
 from groq import Groq
-from pydantic import BaseModel, ValidationError
+import instructor
+from pydantic import BaseModel, Field, ValidationError
 
 from src.parsers.base_parser import BaseParser
-from src.core.schemas import ParsedDocumentData, ExtractedEntity, EntityRelationship
+from src.core.schemas import (
+    ParsedDocumentData, 
+    ExtractedEntity, 
+    EntityRelationship,
+    EntityType,
+    RelationType
+)
 
 logger = logging.getLogger(__name__)
 
 class ColumnMappingSchema(BaseModel):
-    id_column: str
-    type_column: str
-    source_column: str = None
-    target_column: str = None
-    relation_type_column: str = None
+    """Structured schema mapping arbitrary spreadsheet structures to Graph Taxonomies."""
+    id_column: str = Field(description="The header name containing unique identifiers/tags (e.g., P-101).")
+    type_column: str = Field(description="The header name identifying what the row/item is.")
+    
+    # Value mapping dictionary to bridge arbitrary spreadsheet terminology to strict Graph Enums
+    type_value_mappings: Dict[str, EntityType] = Field(
+        description="A dictionary mapping unique raw values from the type_column to valid EntityType enums."
+    )
+    
+    source_column: Optional[str] = Field(default=None, description="Header for source node connections.")
+    target_column: Optional[str] = Field(default=None, description="Header for target node connections.")
+    relation_type_column: Optional[str] = Field(default=None, description="Header for relation types.")
+    
+    relation_value_mappings: Dict[str, RelationType] = Field(
+        default_factory=dict,
+        description="A dictionary mapping unique raw values from the relation_type_column to valid RelationType enums."
+    )
 
 class SpreadsheetParser(BaseParser):
-    def __init__(self, embedding_model, llm_client=None):
+    def __init__(self, embedding_model, llm_client=None, llm_model: str = "llama-3.3-70b-versatile"):
         """
-        Accepts an injected Groq client to share connection pools, 
-        or falls back to a local instance if none is provided.
+        Accepts an injected Groq client or wraps it natively with Instructor.
         """
         super().__init__(embedding_model)
-        self.client = llm_client or Groq(api_key=os.getenv("GROQ_API_KEY"))
+        self.llm_model = llm_model
+        
+        # Wrap raw client with instructor
+        raw_client = llm_client or Groq(api_key=os.getenv("GROQ_API_KEY"))
+        self.client = instructor.from_groq(raw_client, mode=instructor.Mode.TOOLS)
 
     def can_handle(self, file_path: Path) -> bool:
-        valid_extensions = {'.csv', '.xlsx', '.xls', '.xlsm'}
-        return file_path.suffix.lower() in valid_extensions
+        return file_path.suffix.lower() in {'.csv', '.xlsx', '.xls', '.xlsm'}
     
     def _infer_schema(self, df: pd.DataFrame, file_id: str) -> ColumnMappingSchema:
-        """Uses the LLM to map arbitrary spreadsheet columns to our domain schema."""
-        # OPTIMIZATION: Do not send markdown tables. Send a JSON dictionary of the first 2 rows.
-        # This prevents token bloat on spreadsheets with 50+ columns.
+        """Uses Instructor to cleanly map headers and translate values to Enums."""
         columns = list(df.columns)
-        sample_data = df.head(2).to_dict(orient="records")
+        sample_data = df.head(3).to_dict(orient="records")
         
+        # Extract sample unique strings from potential categorical columns to map to Enums
+        # Limiting to top 15 unique values to save tokens while capturing taxonomy context
+        potential_cat_samples = {}
+        for col in columns:
+            try:
+                unique_vals = [str(x) for x in df[col].dropna().unique()[:15] if str(x).strip()]
+                if unique_vals:
+                    potential_cat_samples[col] = unique_vals
+            except Exception:
+                continue
+
         prompt = f"""
-        Analyze this sample of an industrial equipment spreadsheet.
-        Map the existing column headers to our internal schema.
+        Analyze this schema profile of an industrial spreadsheet.
+        1. Identify the structural column headers.
+        2. Map the raw values found in the type and relationship columns to our strict internal Enums.
         
-        Internal Schema Requirements:
-        - id_column: The unique equipment tag (e.g., P-101)
-        - type_column: What the equipment is (e.g., Pump, Valve)
-        - source_column (optional): Indicates a source connection.
-        - target_column (optional): Indicates a target connection.
-        - relation_type_column (optional): Indicates the flow or relationship type.
+        Valid EntityType Options: {[e.value for e in EntityType]}
+        Valid RelationType Options: {[r.value for r in RelationType]}
 
         Available Columns: {columns}
-        Data Sample: {json.dumps(sample_data)}
-
-        Respond ONLY in valid JSON matching this exact structure. Use exact column names. 
-        If an optional column does not exist, map it to null.
-        {{
-            "id_column": "Exact Header Name",
-            "type_column": "Exact Header Name",
-            "source_column": null,
-            "target_column": null,
-            "relation_type_column": null
-        }}
+        Data Sample (First 3 Rows): {json.dumps(sample_data)}
+        Categorical Value Samples per Column: {json.dumps(potential_cat_samples)}
         """
-        
+
         try:
-            completion = self.client.chat.completions.create(
-                messages=[{"role": "user", "content": prompt}],
-                model="llama-3.3-70b-versatile",
-                response_format={"type": "json_object"},
-                temperature=0.0
+            return self.client.chat.completions.create(
+                model=self.llm_model,
+                response_model=ColumnMappingSchema,
+                messages=[
+                    {
+                        "role": "system", 
+                        "content": "You are a senior data architect. Map spreadsheet columns and translate unique values precisely to allowed graph enums."
+                    },
+                    {"role": "user", "content": prompt}
+                ],
+                temperature=0.0,
+                max_retries=2
             )
-            
-            raw_content = completion.choices[0].message.content.strip()
-            
-            # Robust sanitization against markdown wrappers
-            if raw_content.startswith("```json"):
-                raw_content = raw_content.replace("```json", "").replace("```", "").strip()
-                
-            data = json.loads(raw_content)
-            return ColumnMappingSchema(**data)
-            
-        except (Exception, ValidationError) as e:
-            logger.error(f"[{file_id}] Schema inference failed: {e}")
+        except Exception as e:
+            logger.error(f"[{file_id}] Schema inference via instructor failed: {e}")
             raise RuntimeError(f"Spreadsheet schema inference failed for {file_id}") from e
 
     def parse(self, file_path: Path, file_id: str) -> ParsedDocumentData:
-        logger.info(f"[{file_id}] Executing Hybrid Spreadsheet Parser...")
+        logger.info(f"[{file_id}] Executing High-Performance Spreadsheet Parser...")
         
-        # 1. Load Data with strict type enforcement and NaN cleanup
+        # 1. Load Data Matrix
         try:
             if file_path.suffix.lower() == ".csv":
-                # dtype=str prevents Pandas from implicitly casting tags like '0012' to int 12
                 df = pd.read_csv(file_path, dtype=str) 
             else:
                 df = pd.read_excel(file_path, engine='openpyxl', dtype=str)
                 
             df = df.dropna(how='all', axis=0).dropna(how='all', axis=1).fillna("")
         except Exception as e:
-            raise RuntimeError(f"Failed to read spreadsheet file: {e}")
+            raise RuntimeError(f"Failed to read file: {e}")
 
         if df.empty:
-            raise ValueError(f"Spreadsheet {file_id} contains no readable data.")
+            raise ValueError(f"Spreadsheet {file_id} has zero active rows.")
 
-        # 2. Infer Mapping via LLM
+        # 2. Get Structured Mapping Definitions
         mapping = self._infer_schema(df, file_id)
         
         entities = []
         relationships = []
         
-        # 3. Deterministic Extraction (OPTIMIZED: NO iterrows)
-        if mapping.id_column and mapping.type_column and mapping.id_column in df.columns:
-            
-            # Convert to list of dicts for O(1) key lookups and blazing fast iteration
-            records = df.to_dict(orient='records')
-            
-            for row in records:
-                ent_id = str(row.get(mapping.id_column, "")).strip()
-                ent_type = str(row.get(mapping.type_column, "")).strip()
-                
-                if not ent_id:
-                    continue
+        # 3. Blazing Fast Vectorized Dictionary Parsing
+        # It may increase Iteration Speed but creates copy in RAM.
+        records = df.to_dict(orient='records') 
+        
+        id_col = mapping.id_column
+        type_col = mapping.type_column
+        src_col = mapping.source_column
+        tgt_col = mapping.target_column
+        rel_type_col = mapping.relation_type_column
+        
+        type_map = mapping.type_value_mappings
+        rel_map = mapping.relation_value_mappings
 
-                # Isolate properties dynamically without copying the entire dict repeatedly
-                properties = {k: v for k, v in row.items() if k not in (mapping.id_column, mapping.type_column) and v != ""}
+        if id_col in df.columns and type_col in df.columns:
+            for row in records:
+                raw_id = str(row.get(id_col, "")).strip()
+                if not raw_id:
+                    continue
+                
+                # Transform unique tags to standard uppercase requirements safely
+                ent_id = raw_id.upper()
+                raw_type = str(row.get(type_col, "")).strip()
+                
+                # Safeguard: Resolve via mapped dictionary, fallback to UNKNOWN to prevent processing crashes
+                resolved_type = type_map.get(raw_type, EntityType.UNKNOWN)
+
+                # Clear column noise
+                properties = {
+                    k: v for k, v in row.items() 
+                    if k not in (id_col, type_col, src_col, tgt_col, rel_type_col) and v != ""
+                }
                 
                 entities.append(ExtractedEntity(
                     entity_id=ent_id, 
-                    entity_type=ent_type, 
-                    properties=properties
+                    entity_type=resolved_type, 
+                    properties=properties,
+                    confidence=1.0  # Deterministic tabular tracking
                 ))
                 
-                # Handle Optional Relationships
-                if mapping.source_column and mapping.target_column and mapping.relation_type_column:
-                    source = str(row.get(mapping.source_column, "")).strip()
-                    target = str(row.get(mapping.target_column, "")).strip()
-                    rel_type = str(row.get(mapping.relation_type_column, "")).strip()
+                # Process edges conditionally if complete
+                if src_col and tgt_col and src_col in row and tgt_col in row:
+                    source = str(row.get(src_col, "")).strip().upper()
+                    target = str(row.get(tgt_col, "")).strip().upper()
                     
                     if source and target:
+                        raw_rel = str(row.get(rel_type_col, "")) if rel_type_col else ""
+                        # Default fallback edge type if none specified or resolved
+                        resolved_rel = rel_map.get(raw_rel, RelationType.CONNECTS_TO)
+                        
                         relationships.append(EntityRelationship(
                             source_id=source, 
                             target_id=target, 
-                            relation_type=rel_type
+                            relation_type=resolved_rel
                         ))
 
-        # 4. Standardize text and compute actual embeddings
+        # 4. Standardized Output Generation
         raw_text = df.to_csv(index=False)
-        
-        # Rely on the parent BaseParser implementation for chunking and embedding
         chunks = self.chunk_text(raw_text) if hasattr(self, 'chunk_text') else [raw_text]
         embeddings = []
         
@@ -155,7 +187,7 @@ class SpreadsheetParser(BaseParser):
             try:
                 embeddings = self.embedding_model.encode(chunks).tolist()
             except Exception as e:
-                logger.error(f"[{file_id}] Failed to generate text embeddings: {e}")
+                logger.error(f"[{file_id}] Embeddings generation failed: {e}")
 
         return ParsedDocumentData(
             document_id=file_id,

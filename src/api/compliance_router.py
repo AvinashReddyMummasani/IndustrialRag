@@ -1,13 +1,12 @@
 from fastapi import APIRouter, HTTPException, Depends, Request
 from pydantic import BaseModel
 from src.services.compliance_agents import RegulatoryComplianceEngine, AuditRequest
+from src.core.schemas import AuditResponse
 
-router = APIRouter(prefix="/api/v1/compliance", tags=["Phase 4 - Regulatory Intelligence"])
+router = APIRouter(prefix="/api/v1/compliance", tags=["Quality & Regulatory Compliance Intelligence "])
 
-class AuditResponse(BaseModel):
-    status: str
-    report: str
 
+# For safety
 def get_compliance_engine(request: Request) -> RegulatoryComplianceEngine:
     if not hasattr(request.app.state, "compliance_engine") or request.app.state.compliance_engine is None:
         raise HTTPException(status_code=503, detail="Compliance Engine offline.")

@@ -1,14 +1,14 @@
 from fastapi import APIRouter, HTTPException, Depends, Request
-from pydantic import BaseModel
+
 from src.services.rca_agent import IndustrialRCAEngine, RCADiagnosticInput
+from src.core.schemas import APIWebResponse
 
-router = APIRouter(prefix="/api/v1/industrial-intelligence", tags=["Phase 3 - Reliability Intelligence"])
+router = APIRouter(prefix="/api/v1/industrial-intelligence", tags=["Reliability Intelligence"])
 
-class APIWebResponse(BaseModel):
-    status: str
-    report: str
 
-# THIS IS THE CRITICAL FIX: Extract from Request, DO NOT instantiate `IndustrialRCAEngine()` here.
+
+
+
 def resolve_rca_engine(request: Request) -> IndustrialRCAEngine:
     if not hasattr(request.app.state, "rca_engine") or request.app.state.rca_engine is None:
         raise HTTPException(status_code=503, detail="RCA Engine is not initialized.")
