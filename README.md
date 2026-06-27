@@ -15,6 +15,7 @@
 12. If possible in sql_tools/_fetch_neo4j_procedures_sync change exact_match.
 13. While building Graph strict enforce it to have schema required for compliance agent
     and rca agent. *********
+15. In intelligenc_router add other router or service as soon as user request is finished it should be sent to user.
 
 ## Check Complete
 1. Emails
@@ -46,3 +47,23 @@
 6. Semantic parser handles scanned text.
 7. digital_text_parser can parser typed pdfs.
 8. Document parser order is vision-> semantic->digital_text_parser.
+9. Compilance agent assumes graph look like this 
+   (Regulation)
+         │
+         │ HAS_CLAUSE
+         ▼
+      (Clause)
+         │
+         │ APPLIES_TO
+         ▼
+   (AssetType)
+10. RCA agent assumes graph look like this
+   AssetType
+      │
+   HAS_DOCUMENT
+      ▼
+   Document
+      │
+   CONTAINS_PROCEDURE
+      ▼
+   Procedure
