@@ -21,24 +21,22 @@ def get_copilot_engine(request: Request) -> KnowledgeCopilot:
     return request.app.state.copilot
 
 @router.post("/query", response_model=QueryResponse)
-def query_knowledge(
+async def query_knowledge(
     payload: QueryRequest, 
     copilot: KnowledgeCopilot = Depends(get_copilot_engine)
 ):
     """
-    Executes the deterministic GraphRAG / Self-RAG loop.
-    Defined synchronously due to underlying blocking database drivers.
+    Executes the deterministic GraphRAG / Self-RAG loop asynchronously.
     """
     logger.info(f"API Request received for query: {payload.query_text}")
 
     try:
-        # The 'copilot' object here is the exact instance loaded in main.py
-        response_payload = copilot.ask(payload.query_text)
+        response_payload = await copilot.ask(payload.query_text)
         return response_payload
         
     except Exception as e:
         logger.error(f"Copilot execution failed at router boundary: {e}")
-        # Mask internal stack traces from the client while returning a standard 500
+        
         raise HTTPException(
             status_code=500, 
             detail="The Knowledge Copilot encountered a system error during execution."

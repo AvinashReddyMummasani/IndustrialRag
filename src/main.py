@@ -65,7 +65,7 @@ async def lifespan(app: FastAPI):
         app.state.pipeline = IngestionPipeline(model=embedding_model,vision_clinet=vision_client)
         app.state.incident_pipeline = IncidentDataPipeline(embedding_model=embedding_model)
         
-        app.state.copilot = KnowledgeCopilot()
+        app.state.copilot = KnowledgeCopilot(embedding_model=embedding_model)
         app.state.rca_engine = IndustrialRCAEngine()
         app.state.compliance_engine = RegulatoryComplianceEngine()
         

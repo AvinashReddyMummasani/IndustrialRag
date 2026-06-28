@@ -16,6 +16,15 @@
 13. While building Graph strict enforce it to have schema required for compliance agent
     and rca agent. *********
 15. In intelligenc_router add other router or service as soon as user request is finished it should be sent to user.
+16. RCA should use real TIME data too. ***** (etl,timescale db)
+
+18. After user queries something the evidence should be clickable.(should return links of soure files to frontend).
+
+19. Learn about ayncio and .gather all imp methods.
+
+20. Update the cyper query in knowledge copiolt.
+
+21. In knowledge copilot missing retry for grade_context and on errors it is directly going to next node.
 
 ## Check Complete
 1. Emails
@@ -25,6 +34,7 @@
 5. ingestion_router
 6. file classifier
 7. rca_agent_router and related.
+8. copiolt. 
 
 
 ## Notes
@@ -67,3 +77,9 @@
    CONTAINS_PROCEDURE
       ▼
    Procedure
+
+11. knowledge_copilot takes best case 5 llm api calls at worst 11 api calls.
+
+## Final optimizations
+1. Interpret what happens on scale write its impact and
+   how application takes care of it. (business impact).

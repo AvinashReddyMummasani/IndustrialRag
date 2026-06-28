@@ -1,5 +1,5 @@
-from pydantic import BaseModel, Field
-from typing import List, Dict, Any, Optional
+from pydantic import BaseModel, Field, field_validator
+from typing import List, Dict, Any, Optional, TypedDict, Literal
 from enum import Enum
 
 # --- Strict Graph Taxonomies ---
@@ -160,3 +160,48 @@ class AuditReportSchema(BaseModel):
     operational_deviations: List[str] = Field(description="Explicit list of deviations. Empty if none.")
     is_compliant: bool = Field(description="True if 0 deviations, False otherwise.")
     evidence_references: List[str] = Field(description="DB primary keys or file names proving the status.")
+
+class AgentState(TypedDict):
+    query: str
+    combined_context: str
+    generation: str
+    evidence: List[str]
+    is_relevant: bool
+    is_grounded: bool
+    is_useful: bool
+    retries: int
+
+
+class ExtractedEntity(BaseModel):
+    """Container representing an individual operational asset or tag reference."""
+    raw_mention: str = Field(
+        ..., 
+        description="The exact text string or identifier as it appears in the query (e.g., 'PUMP-101', 'E-202')."
+    )
+    category: Literal["ASSET", "FAILURE_CODE", "REGULATORY_STANDARD"] = Field(
+        ...,
+        description="The architectural catalog category this tag belongs to based on schema definitions."
+    )
+    confidence: float = Field(
+        ..., 
+        ge=0.0, 
+        le=1.0, 
+        description="The internal model extraction confidence score between 0.0 and 1.0."
+    )
+
+    @field_validator("raw_mention")
+    @classmethod
+    def normalize_and_clean(cls, v: str) -> str:
+        """Strip whitespaces and cast to uppercase to prevent downstream cache misses."""
+        return v.strip().upper()
+
+class EntityExtractor(BaseModel):
+    """Root extraction payload containing normalized operational tags and engineering intent."""
+    entities: List[ExtractedEntity] = Field(
+        default_factory=list,
+        description="A list of unique industrial identifiers matched within the instruction text."
+    )
+    reasoning_log: str = Field(
+        ...,
+        description="Brief engineering rationale explaining why these specific identifiers were grouped."
+    )

@@ -1,44 +1,36 @@
 import os
 import logging
+import asyncio
 from typing import List, Dict, Any, TypedDict
-from pydantic import BaseModel, Field
 import instructor
-from groq import Groq
+from groq import AsyncGroq
 from sentence_transformers import SentenceTransformer
 from langgraph.graph import StateGraph, END
-from src.core.schemas import EntityExtractor,RelevanceGrade,CitedAnswer,GroundednessGrade,UtilityGrade
 
+from src.core.schemas import EntityExtractor, RelevanceGrade, CitedAnswer, GroundednessGrade, UtilityGrade, AgentState
 from src.db.postgres_client import PostgresPool 
 from src.db.neo4j_client import Neo4jClient
+from src.services.entity_resolver import EntityResolver
 
 logger = logging.getLogger(__name__)
 
-
-# =====================================================================
-# State Machine Contract
-# =====================================================================
-
-class AgentState(TypedDict):
-    query: str
-    combined_context: str
-    generation: str
-    evidence: List[str]
-    is_relevant: bool
-    is_grounded: bool
-    is_useful: bool
-    retries: int
-
-# =====================================================================
-# System Workflow Engine
-# =====================================================================
+# class AgentState(TypedDict):
+#     query: str
+#     combined_context: str
+#     generation: str
+#     evidence: List[str]
+#     is_relevant: bool
+#     is_grounded: bool
+#     is_useful: bool
+#     retries: int
 
 class KnowledgeCopilot:
-    def __init__(self):
-        raw_client = Groq(api_key=os.getenv("GROQ_API_KEY"))
+    def __init__(self,embedding_model):
+        raw_client = AsyncGroq(api_key=os.getenv("GROQ_API_KEY"))
         self.client = instructor.from_groq(raw_client, mode=instructor.Mode.TOOLS)
+        self.resolver = EntityResolver()
         
-        # Dense vector encoder mapping safely to standard relational parameters
-        self.embedding_model = SentenceTransformer("all-mpnet-base-v2")
+        self.embedding_model = embedding_model
         self.llm_model = "llama3-70b-8192"
         self.max_retries = 3
         
@@ -46,33 +38,35 @@ class KnowledgeCopilot:
 
     def _get_query_embedding(self, query: str) -> List[float]:
         embedding = self.embedding_model.encode(query).tolist()
-        if len(embedding) < 1536:
-            embedding.extend([0.0] * (1536 - len(embedding)))
-        return embedding[:1536]
+        if len(embedding) < 384:
+            embedding.extend([0.0] * (384 - len(embedding)))
+        return embedding[:384]
 
-    def _fetch_vector_context(self, query_vector: List[float], limit: int = 4) -> List[Dict[str, Any]]:
-            chunks = []
-            sql = """
-                SELECT c.chunk_text, d.filename, d.id, (c.embedding <=> %s::vector) AS distance 
-                FROM document_chunks c
-                JOIN documents d ON c.document_id = d.id
-                ORDER BY distance ASC LIMIT %s;
-            """
-            # Changed to PostgresPool
-            with PostgresPool.get_connection() as conn:
-                with conn.cursor() as cur:
-                    cur.execute(sql, (query_vector, limit))
-                    for row in cur.fetchall():
-                        chunks.append({
-                            "text": row[0],
-                            "filename": row[1],
-                            "doc_id": row[2]
-                        })
-            return chunks
+    async def _fetch_vector_context(self, query_vector: List[float], limit: int = 4) -> List[Dict[str, Any]]:
+        chunks = []
 
-    def _fetch_graph_context(self, entities: List[str]) -> List[Dict[str, Any]]:
+        sql = """
+            SELECT c.chunk_text, d.filename, d.id, (c.embedding <=> $1::vector) AS distance 
+            FROM document_chunks c
+            JOIN documents d ON c.document_id = d.id
+            ORDER BY distance ASC LIMIT $2;
+        """
+        async with PostgresPool.get_connection() as conn:
+
+            rows = await conn.fetch(sql, str(query_vector), limit)
+            for row in rows:
+                chunks.append({
+                    "text": row['chunk_text'],
+                    "filename": row['filename'],
+                    "doc_id": row['id']
+                })
+        return chunks
+
+    async def _fetch_graph_context(self, entities: List[str]) -> List[Dict[str, Any]]:
         if not entities:
             return []
+        
+        # specify relation logic in production iteration
         cypher = """
         UNWIND $entity_ids AS e_id
         MATCH (n {entity_id: e_id})
@@ -80,36 +74,54 @@ class KnowledgeCopilot:
         RETURN n.entity_id AS source, type(r) AS relationship, m.entity_id AS target, r.document_id AS doc_id
         LIMIT 30
         """
-        records = []
-        with Neo4jClient._driver.session() as session:
-            result = session.run(cypher, entity_ids=entities)
-            for record in result:
-                records.append(record.data())
-        return records
+        return await Neo4jClient.execute_read_query(cypher, parameters={"entity_ids": entities})
 
-    # --- LangGraph Graph Components ---
-
-    def retrieve_node(self, state: AgentState) -> dict:
-        logger.info("[State Node] Fetching multi-modal contexts.")
+    async def retrieve_node(self, state: AgentState) -> dict:
+        logger.info("[State Node] Executing multi-modal contexts retrieval.")
         query = state["query"]
         
+        system_prompt = (
+            "You are an elite reliability engineering extraction engine.\n"
+            "Analyze the provided text and isolate all operational tags, equipment identifiers, "
+            "failure codes, or industry compliance standards (e.g., ISO, API, ASME).\n\n"
+            "CRITICAL RULES:\n"
+            "1. Do not hallucinate tags. If no explicit tags exist, return an empty entities list.\n"
+            "2. Isolate substrings cleanly. For example, in 'Inspect PUMP-101A and B', extract 'PUMP-101A' and 'PUMP-101B'.\n"
+            "3. Provide an analytical engineering log detailing your extraction choices."
+        )
+
         try:
-            extraction: EntityExtractor = self.client.chat.completions.create(
+            extraction: EntityExtractor = await self.client.chat.completions.create(
                 model=self.llm_model,
                 response_model=EntityExtractor,
                 messages=[
-                    {"role": "system", "content": "Extract industrial asset identifiers/tags from instructions."},
-                    {"role": "user", "content": query}
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": f"Target Text: {query}"}
                 ],
                 temperature=0.0
             )
-            entities = [e.upper() for e in extraction.entities]
-        except Exception:
-            entities = []
+            logger.info(f"[Extraction Complete] Logs: {extraction.reasoning_log}")
+            
+        except Exception as e:
+            logger.error(f"Critical schema extraction breakdown: {e}")
+            extraction = EntityExtractor(entities=[], reasoning_log="Pipeline extraction execution failure.")
+
+        asset_mentions = [
+            ent.raw_mention for ent in extraction.entities if ent.category == "ASSET"
+        ]
+        
+        resolved_entities = []
+        for raw in asset_mentions:
+            canonical_id = await self.resolver.resolve_asset_id(raw)
+            if canonical_id:
+                resolved_entities.append(canonical_id)
 
         query_vector = self._get_query_embedding(query)
-        vector_data = self._fetch_vector_context(query_vector)
-        graph_data = self._fetch_graph_context(entities)
+        
+        vector_data, graph_data = await asyncio.gather(
+            self._fetch_vector_context(query_vector),
+            self._fetch_graph_context(resolved_entities)
+        )
         
         vector_str = "\n".join([f"- [Doc Source File: {c['filename']}] {c['text']}" for c in vector_data])
         graph_str = "\n".join([
@@ -120,10 +132,10 @@ class KnowledgeCopilot:
         combined_context = f"=== VECTOR DATABASE RECORDS ===\n{vector_str}\n\n=== RELATIONSHIP TOPOLOGY MAP ===\n{graph_str}"
         return {"combined_context": combined_context}
 
-    def grade_context_node(self, state: AgentState) -> dict:
+    async def grade_context_node(self, state: AgentState) -> dict:
         logger.info("[State Node] Validating retrieval context relevancy scores.")
         try:
-            grade: RelevanceGrade = self.client.chat.completions.create(
+            grade: RelevanceGrade = await self.client.chat.completions.create(
                 model=self.llm_model,
                 response_model=RelevanceGrade,
                 messages=[
@@ -138,7 +150,7 @@ class KnowledgeCopilot:
         except Exception:
             return {"is_relevant": True}
 
-    def generate_node(self, state: AgentState) -> dict:
+    async def generate_node(self, state: AgentState) -> dict:
         logger.info(f"[State Node] Generating target analysis. Attempt {state['retries'] + 1}")
         prompt = f"""
         Synthesize a rigorous engineering answer addressing the query below. 
@@ -152,7 +164,7 @@ class KnowledgeCopilot:
         Target User Query: {state['query']}
         """
         try:
-            response: CitedAnswer = self.client.chat.completions.create(
+            response: CitedAnswer = await self.client.chat.completions.create(
                 messages=[{"role": "user", "content": prompt}],
                 model=self.llm_model,
                 response_model=CitedAnswer,
@@ -167,20 +179,20 @@ class KnowledgeCopilot:
             logger.error(f"Structured Generation crash down step: {e}")
             return {"generation": "Generation Pipeline Fault encountered.", "evidence": [], "retries": state["retries"] + 1}
 
-    def grade_generation_node(self, state: AgentState) -> dict:
+    async def grade_generation_node(self, state: AgentState) -> dict:
         logger.info("[State Node] Grading synthesized answer metrics against original contexts.")
         ctx = state["combined_context"]
         gen = state["generation"]
         q = state["query"]
         
         try:
-            grounded: GroundednessGrade = self.client.chat.completions.create(
+            grounded: GroundednessGrade = await self.client.chat.completions.create(
                 model=self.llm_model,
                 response_model=GroundednessGrade,
                 messages=[{"role": "user", "content": f"Database Master Context:\n{ctx}\n\nProposed Generation Text:\n{gen}"}],
                 temperature=0.0
             )
-            useful: UtilityGrade = self.client.chat.completions.create(
+            useful: UtilityGrade = await self.client.chat.completions.create(
                 model=self.llm_model,
                 response_model=UtilityGrade,
                 messages=[{"role": "user", "content": f"User Operational Query:\n{q}\n\nSynthesized Answer text:\n{gen}"}],
@@ -188,9 +200,9 @@ class KnowledgeCopilot:
             )
             return {"is_grounded": grounded.is_grounded, "is_useful": useful.fully_answers}
         except Exception:
+            logger.info("Exception happened at grading output context the output may be inacurate.")
+            # Find solutions for this
             return {"is_grounded": True, "is_useful": True}
-
-    # --- Edge Evaluation Routines ---
 
     def _evaluate_loop_requirements(self, state: AgentState) -> str:
         if state["is_grounded"] and state["is_useful"]:
@@ -204,8 +216,6 @@ class KnowledgeCopilot:
         logger.warning("[Routing Edge] Internal compliance validation failure. Forcing loop recalculation.")
         return "generate"
 
-    # --- Graph Orchestration ---
-
     def _compile_workflow(self):
         workflow = StateGraph(AgentState)
         
@@ -216,6 +226,8 @@ class KnowledgeCopilot:
         
         workflow.set_entry_point("retrieve")
         workflow.add_edge("retrieve", "grade_context")
+
+        # grade_context loop
         workflow.add_edge("grade_context", "generate")
         workflow.add_edge("generate", "grade_generation")
         
@@ -229,7 +241,7 @@ class KnowledgeCopilot:
         )
         return workflow.compile()
 
-    def ask(self, query: str) -> dict:
+    async def ask(self, query: str) -> dict:
         """System entrypoint. Returns structured answers mapped to verified source references."""
         initial_state = {
             "query": query,
@@ -241,7 +253,8 @@ class KnowledgeCopilot:
             "is_useful": False,
             "retries": 0
         }
-        final_state = self.graph.invoke(initial_state)
+        # Invoke LangGraph asynchronously
+        final_state = await self.graph.ainvoke(initial_state)
         return {
             "answer": final_state["generation"],
             "evidence_links": final_state["evidence"]

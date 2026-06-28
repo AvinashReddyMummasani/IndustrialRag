@@ -9,7 +9,7 @@ logger = logging.getLogger(__name__)
 
 class NotificationService:
     def __init__(self):
-        # Fail immediately if environment variables are missing in production
+        
         self.smtp_host = os.environ.get("SMTP_HOST", "smtp.office365.com")
         self.smtp_port = int(os.environ.get("SMTP_PORT", 587))
         self.smtp_user = os.environ.get("SMTP_USER", "alerts@industrial-ai.local")
@@ -36,15 +36,15 @@ class NotificationService:
         except Exception as e:
             logger.error(f"SMTP drop for {target_email}: {e}")
 
-    async def broadcast_alert(self, users: List[Dict[str, str]], asset_id: str, alert_text: str):
+    async def broadcast_alert(self, users: List[Dict[str, str]], asset_type: str, alert_text: str):
         """Concurrently dispatches emails to all targets."""
         if not users:
             logger.warning("Notification aborted: No active team members matching criteria.")
             return
 
-        subject = f"[CRITICAL AI ALERT] Predictive Failure Detected: Asset {asset_id}"
+        subject = f"[CRITICAL AI ALERT] Predictive Failure Detected: Asset {asset_type}"
         
-        # Brutal optimization: Gather all network calls and execute them in parallel
+        # Gather all network calls and execute them in parallel
         tasks = [
             self._send_single_email(user["email"], subject, alert_text)
             for user in users
