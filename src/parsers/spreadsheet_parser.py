@@ -41,7 +41,9 @@ class ColumnMappingSchema(BaseModel):
 class SpreadsheetParser(BaseParser):
     def __init__(self, embedding_model, llm_client=None, llm_model: str = "llama-3.3-70b-versatile"):
         """
-        Accepts an injected Groq client or wraps it natively with Instructor.
+        Convert industrial spreadsheet data into Graph data.
+        Assuming spreadsheet cols have less unique values and it contain id tags column and 
+        devices column.
         """
         super().__init__(embedding_model)
         self.llm_model = llm_model
@@ -58,8 +60,6 @@ class SpreadsheetParser(BaseParser):
         columns = list(df.columns)
         sample_data = df.head(3).to_dict(orient="records")
         
-        # Extract sample unique strings from potential categorical columns to map to Enums
-        # Limiting to top 15 unique values to save tokens while capturing taxonomy context
         potential_cat_samples = {}
         for col in columns:
             try:
@@ -124,17 +124,17 @@ class SpreadsheetParser(BaseParser):
         relationships = []
         
         # 3. Blazing Fast Vectorized Dictionary Parsing
-        # It may increase Iteration Speed but creates copy in RAM.
+
         records = df.to_dict(orient='records') 
         
-        id_col = mapping.id_column
-        type_col = mapping.type_column
-        src_col = mapping.source_column
-        tgt_col = mapping.target_column
-        rel_type_col = mapping.relation_type_column
+        id_col = mapping.id_column # Tag
+        type_col = mapping.type_column # device type
+        src_col = mapping.source_column # from 
+        tgt_col = mapping.target_column # To
+        rel_type_col = mapping.relation_type_column # connection_type
         
-        type_map = mapping.type_value_mappings
-        rel_map = mapping.relation_value_mappings
+        type_map = mapping.type_value_mappings # {device : Entity: type}
+        rel_map = mapping.relation_value_mappings # {reln : actual reln}
 
         if id_col in df.columns and type_col in df.columns:
             for row in records:
@@ -142,11 +142,8 @@ class SpreadsheetParser(BaseParser):
                 if not raw_id:
                     continue
                 
-                # Transform unique tags to standard uppercase requirements safely
                 ent_id = raw_id.upper()
                 raw_type = str(row.get(type_col, "")).strip()
-                
-                # Safeguard: Resolve via mapped dictionary, fallback to UNKNOWN to prevent processing crashes
                 resolved_type = type_map.get(raw_type, EntityType.UNKNOWN)
 
                 # Clear column noise

@@ -29,30 +29,31 @@ async def lifespan(app: FastAPI):
     Manages global application state. 
     Guarantees teardown execution even if the application crashes.
     """
-    logger.info("Initiating database connection pools...")
+    logger.info("Initiating async database connection pools...")
     try:
-        PostgresPool.initialize()
-        logger.info("PostgreSQL pool initialized successfully.")
+        await PostgresPool.initialize()
+        logger.info("PostgreSQL asyncpg pool initialized successfully.")
         
-        Neo4jClient.initialize()
-        logger.info("Neo4j driver initialized successfully.")
+        await Neo4jClient.initialize()
+        logger.info("Neo4j async driver initialized successfully.")
     except Exception as e:
         logger.critical(f"Fatal boot failure. Database initialization aborted: {e}")
         raise RuntimeError("Halting boot sequence due to database connection failure.") from e
 
-    logger.info("Loading heavy ML models and Agent orchestrators into worker memory state...")
+    logger.info("Loading ML models and Agent orchestrators into worker memory state...")
     try:
-
         from src.services.file_classifier import IngestionPipeline
         from src.services.knowledge_copilot import KnowledgeCopilot
         from src.services.rca_agent import IndustrialRCAEngine  
         from src.services.compliance_agents import RegulatoryComplianceEngine
-        from src.services.failure_intelligence_agent import FailureIntelligenceEngine # check it
-        from src.etl.incident_pipeline import IncidentDataPipeline # check it
+        from src.services.failure_intelligence_agent import FailureIntelligenceEngine
+        from src.etl.incident_pipeline import IncidentDataPipeline
         from sentence_transformers import SentenceTransformer 
         from langchain_groq import ChatGroq
         
-        logger.info("Downloading/Loading SentenceTransformer weights (all-MiniLM-L6-v2)...")
+        # Note: SentenceTransformer loading is CPU bound and synchronous.
+        # It is acceptable here in the lifespan block before accepting traffic.
+        logger.info("Loading SentenceTransformer weights (all-MiniLM-L6-v2)...")
         embedding_model = SentenceTransformer('all-MiniLM-L6-v2')
         logger.info("Initializing Vision API Client...")
     
@@ -61,14 +62,13 @@ async def lifespan(app: FastAPI):
             temperature=0.0, 
             max_retries=3
         )
-        
-        app.state.pipeline = IngestionPipeline(model=embedding_model,vision_clinet=vision_client)
+
+        app.state.pipeline = IngestionPipeline(model=embedding_model, vision_client=vision_client)
         app.state.incident_pipeline = IncidentDataPipeline(embedding_model=embedding_model)
         
         app.state.copilot = KnowledgeCopilot(embedding_model=embedding_model)
-        app.state.rca_engine = IndustrialRCAEngine()
+        app.state.rca_engine = IndustrialRCAEngine(embedding_model=embedding_model)
         app.state.compliance_engine = RegulatoryComplianceEngine()
-        
         app.state.intelligence_engine = FailureIntelligenceEngine(embedding_model=embedding_model)
         
         logger.info("ML Models, ETL Pipelines, and Agents attached to application state.")
@@ -78,16 +78,14 @@ async def lifespan(app: FastAPI):
 
     yield 
 
-    # Clean up code
-
     logger.info("Initiating graceful shutdown sequence...")
     try:
-        Neo4jClient.close()
-        logger.info("Neo4j driver closed.")
+        await Neo4jClient.close()
+        logger.info("Neo4j async driver closed.")
         
         if hasattr(PostgresPool, '_pool') and PostgresPool._pool:
-            PostgresPool._pool.closeall()
-            logger.info("PostgreSQL connection pool closed.")
+            await PostgresPool._pool.close()
+            logger.info("PostgreSQL asyncpg connection pool closed.")
     
         app.state.pipeline = None
         app.state.incident_pipeline = None

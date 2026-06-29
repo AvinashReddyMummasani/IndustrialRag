@@ -13,12 +13,12 @@ def get_compliance_engine(request: Request) -> RegulatoryComplianceEngine:
     return request.app.state.compliance_engine
 
 @router.post("/run-audit", response_model=AuditResponse)
-def execute_compliance_audit(
+async def execute_compliance_audit(
     payload: AuditRequest,
     engine: RegulatoryComplianceEngine = Depends(get_compliance_engine)
 ):
     """Generates an auto-audit report comparing equipment state to legal standards."""
-    result = engine.execute_audit(payload)
+    result = await engine.execute_audit(payload)
     
     if result["status"] == "FATAL":
         raise HTTPException(status_code=500, detail=result["report"])

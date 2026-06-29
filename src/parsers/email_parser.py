@@ -10,6 +10,7 @@ from typing import Tuple, List
 from groq import Groq
 import instructor
 from pydantic import BaseModel, Field
+from src.services.entity_resolver import EntityResolver
 
 from src.parsers.base_parser import BaseParser
 from src.core.schemas import (
@@ -36,6 +37,8 @@ class EmailGraphExtraction(BaseModel):
 class EmailParser(BaseParser):
     def __init__(self, extract_dir: Path = Path("./temp_uploads"),model=None):
         super().__init__(model)
+        
+        self.resolver = EntityResolver()
         
         raw_client = Groq(api_key=os.getenv("GROQ_API_KEY"))
         # To make model return pydantic object instead of string
@@ -217,6 +220,7 @@ class EmailParser(BaseParser):
         )
         
         existing_ids = {e.entity_id for e in entities}
+
         for be in body_entities:
             if be.entity_id not in existing_ids:
                 entities.append(be)
@@ -224,10 +228,16 @@ class EmailParser(BaseParser):
 
         relationships.extend(body_relationships)
 
+        # unique_ids = {}
+        # for id in existing_ids:
+        #     canonical_id = await self.resolver.resolve_asset_id(raw)
+        #     if canonical_id:
+        #         resolved_entities.append(canonical_id)
+
         # Handle attachment edges deterministically
         
         for attachment in extracted_attachments:
-            # Assumes attachment IDs will be based on their filename for linking
+            
             attachment_doc_id = f"doc_{attachment.name}" 
             relationships.append(EntityRelationship(
                 source_id=file_id, 

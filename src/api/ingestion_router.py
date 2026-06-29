@@ -8,7 +8,7 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 UPLOAD_DIR = Path("./temp_uploads")
 UPLOAD_DIR.mkdir(exist_ok=True)
-ALLOWED_EXTENSIONS = {".pdf", ".png", ".jpg", ".jpeg", ".csv", ".xlsx", ".eml"}
+ALLOWED_EXTENSIONS = {".pdf", ".png", ".jpg", ".jpeg", ".csv", ".xlsx", ".eml", ".zip"}
 MAX_FILE_SIZE_MB = 50 
 
 def cleanup_temp_file(path: Path):

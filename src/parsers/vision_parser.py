@@ -160,11 +160,11 @@ class VisionParser(BaseParser):
             
             embeddings = []
             chunks = self.chunk_text(raw_text) 
-            # Safely execute embeddings utilizing the BaseParser's stored model
+        
             
             if hasattr(self, 'embedding_model') and self.embedding_model and chunks:
                 try:
-                    # Using standard sentence-transformers execution
+
                     embeddings = self.embedding_model.encode(chunks).tolist()
                 except Exception as e:
                     logger.error(f"[{document_id}] Failed to generate text embeddings: {e}")

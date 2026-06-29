@@ -37,14 +37,11 @@ class SemanticParser(BaseParser):
             
         if isinstance(input_target, fitz.Page):
             try:
-                # Fast extraction of native digital text
                 text = input_target.get_text("text").strip()
                 
-                # If there's dense native text, it belongs to the DigitalTextParser, not here.
                 if len(text) > 200: 
                     return False
                     
-                # If native text is empty/sparse, it's a scanned page and requires OCR.
                 return True
                 
             except Exception as e:

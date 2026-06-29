@@ -59,7 +59,6 @@ class DigitalTextParser(BaseParser):
     def parse(self, page: fitz.Page, page_id: str) -> ParsedDocumentData:
         raw_text = page.get_text("text").strip()
         
-        # 1. Short-Circuit
         if not raw_text:
             logger.warning(f"[{page_id}] Empty page. Bypassing extraction.")
             return ParsedDocumentData(

@@ -26,6 +26,15 @@
 
 21. In knowledge copilot missing retry for grade_context and on errors it is directly going to next node.
 
+22. CRITICAl in file classifier data is not writtten int neo4j in last _write_to_db method.
+
+23. CRITICAL for all parsers parsing garaph data make sure to resolve them using entity parser.
+
+24. In spread sheet parser use custom chunker for making rows intact.
+
+25. CRITICAL Enforce req parsers to create graph data satisfying other agens.
+
+
 ## Check Complete
 1. Emails
 2. Visiion Parser
@@ -78,8 +87,13 @@
       ▼
    Procedure
 
+
 11. knowledge_copilot takes best case 5 llm api calls at worst 11 api calls.
+
+12. Using vector search in neo4j.
 
 ## Final optimizations
 1. Interpret what happens on scale write its impact and
    how application takes care of it. (business impact).
+
+2. while inserting data into graph try to push embeddings in formate.

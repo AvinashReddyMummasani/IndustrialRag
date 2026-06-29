@@ -5,15 +5,12 @@ from typing import Dict, Any, List
 from pydantic import BaseModel, Field
 
 from langchain_groq import ChatGroq
-from langchain_core.messages import SystemMessage, HumanMessage, AIMessage
-from langchain_core.tools import StructuredTool
-from langgraph.graph import StateGraph, START, END, MessagesState
-from langgraph.prebuilt import ToolNode, tools_condition
-from langgraph.errors import GraphRecursionError
+from langchain_core.messages import SystemMessage, HumanMessage
 
 from src.db.postgres_client import PostgresPool
 
 logger = logging.getLogger(__name__)
+
 
 class AnomalyEvent(BaseModel):
     asset_category: str = Field(..., description="The category of the equipment (e.g., 'Centrifugal Pump').")
@@ -27,161 +24,113 @@ class ProactiveAlertSchema(BaseModel):
     confidence_score: float = Field(description="Diagnostic confidence between 0.0 and 1.0 based on historical match quality.")
     referenced_incident_ids: List[str] = Field(description="List of 'incident_id' primary keys used to make this prediction.")
 
+
+
 class FailureIntelligenceEngine:
-    """Learns from past patterns"""
+    """
+     Based on current symtoms and previous patterns it suggest what to do.
+    """
     
     def __init__(self, embedding_model):
         self.embedding_model = embedding_model
         
-        # Model 1: The Reasoner (Allowed slight temperature for pattern matching)
         self.llm = ChatGroq(
             model="llama-3.3-70b-versatile", 
             temperature=0.1, 
             max_retries=3
         )
-        
-        # Model 2: The Synthesizer (Zero temperature, forced Pydantic schema)
         self.structured_llm = self.llm.with_structured_output(ProactiveAlertSchema)
-        
-        # Bind the isolated async tool closure
-        self.tools = [self._build_hybrid_search_tool()]
-        self.llm_with_tools = self.llm.bind_tools(self.tools)
         
         self.system_prompt = """You are an Industrial Failure Intelligence AI.
 A new anomaly has been detected in the plant. Your job is to prevent a catastrophic failure.
 
 Mandatory Execution Flow:
-1. Use 'search_historical_incidents' to find similar past failures.
-2. Analyze the historical root causes that evolved from these exact symptoms.
+1. Analyze the provided Historical Incident Data that matched the current symptoms.
+2. Determine the historical root causes that evolved from these exact symptoms.
 3. Compare the semantic similarity scores to determine threat validity.
 
-Focus purely on analytical extraction and database querying. Do not attempt to format the final alert layout."""
+Focus purely on analytical extraction. Output strictly to the requested JSON schema."""
 
-        # Compile the deterministic DAG
-        self.graph = self._build_graph()
+    async def _generate_embedding_async(self, text: str) -> list[float]:
+        """Safely offloads CPU-bound tensor operations to a background thread."""
+        def _sync_encode():
+            return self.embedding_model.encode(text).tolist()
+        return await asyncio.to_thread(_sync_encode)
 
-    def _build_hybrid_search_tool(self) -> StructuredTool:
-        """Encapsulates blocking dependencies in a thread-safe asynchronous tool."""
-        
-        def _sync_search_logic(asset_category: str, symptom_description: str, limit: int) -> str:
-            """Synchronous execution core for CPU and I/O blocking tasks."""
-            # 1. CPU-Bound Embedding Generation
-            try:
-                query_vector = self.embedding_model.encode(symptom_description).tolist()
-            except Exception as e:
-                logger.error(f"Embedding generation failed: {e}")
-                return "System Error: Could not vectorize search query."
-
-            # 2. I/O-Bound Database Execution
-            query = """
-                SELECT incident_id, severity, root_cause_category, incident_narrative, 
-                       1 - (narrative_embedding <=> %s::vector) AS similarity_score
-                FROM historical_incidents
-                WHERE asset_category = %s
-                ORDER BY narrative_embedding <=> %s::vector
-                LIMIT %s;
-            """
-            try:
-                with PostgresPool.get_connection() as conn:
-                    with conn.cursor() as cur:
-                        cur.execute(query, (query_vector, asset_category, query_vector, limit))
-                        rows = cur.fetchall()
-                
-                if not rows:
-                    return f"No similar historical incidents found for {asset_category}."
-
-                payload = [
-                    {
-                        "incident_id": r[0],
-                        "severity": r[1],
-                        "root_cause": r[2],
-                        "narrative": r[3],
-                        "relevance_score": round(float(r[4]), 3)
-                    }
-                    for r in rows if float(r[4]) > 0.65  # Noise rejection threshold
-                ]
-                
-                return json.dumps(payload) if payload else "No incidents crossed the 0.65 relevance threshold."
-                
-            except Exception as e:
-                logger.error(f"Hybrid search DB failure: {e}")
-                return f"Database Error: {str(e)}"
-
-        async def _async_wrapper(asset_category: str, symptom_description: str, limit: int = 3) -> str:
-            """Pushes the synchronous core to the asyncio thread pool."""
-            return await asyncio.to_thread(_sync_search_logic, asset_category, symptom_description, limit)
-
-        return StructuredTool.from_function(
-            coroutine=_async_wrapper,
-            name="search_historical_incidents",
-            description="Searches the incident database for past failures using semantic vector similarity."
-        )
-
-    def _build_graph(self):
-        """Constructs the LangGraph state machine."""
-        workflow = StateGraph(MessagesState)
-        
-        # NODE 1: Autonomous Reasoning
-        async def call_model(state: MessagesState):
-            messages = state["messages"]
-            if not isinstance(messages[0], SystemMessage):
-                messages = [SystemMessage(content=self.system_prompt)] + messages
+    async def _fetch_similar_incidents(self, asset_category: str, query_vector: list[float], limit: int = 3) -> str:
+        """Executes native async pgvector similarity search."""
+        query = """
+            SELECT incident_id, severity, root_cause_category, incident_narrative, 
+                   1 - (narrative_embedding <=> $1::vector) AS similarity_score
+            FROM historical_incidents
+            WHERE asset_category = $2
+            ORDER BY narrative_embedding <=> $1::vector
+            LIMIT $3;
+        """
+        try:
+            async with PostgresPool.get_connection() as conn:
+                vector_str = str(query_vector)
+                rows = await conn.fetch(query, vector_str, asset_category, limit)
             
-            response = await self.llm_with_tools.ainvoke(messages)
-            return {"messages": [response]}
+            if not rows:
+                return f"No historical incidents found for {asset_category}."
 
-        # NODE 2: Strict Schema Extraction
-        async def format_final_alert(state: MessagesState):
-            messages = state["messages"][-1]
-            extraction_prompt = HumanMessage(
-                content="Review the threat analysis and extract the final predictive intelligence into the required JSON schema."
-            )
+            payload = [
+                {
+                    "incident_id": r['incident_id'],
+                    "severity": r['severity'],
+                    "root_cause": r['root_cause_category'],
+                    "narrative": r['incident_narrative'],
+                    "relevance_score": round(float(r['similarity_score']), 3)
+                }
+                for r in rows if float(r['similarity_score']) > 0.65 
+            ]
             
-            structured_payload: ProactiveAlertSchema = await self.structured_llm.ainvoke(messages + [extraction_prompt])
-            return {"messages": [AIMessage(content=structured_payload.model_dump_json())]}
-
-        workflow.add_node("agent", call_model)
-        workflow.add_node("tools", ToolNode(self.tools))
-        workflow.add_node("format_output", format_final_alert)
-
-        # Edges
-        workflow.add_edge(START, "agent")
-        workflow.add_conditional_edges("agent", tools_condition, {"tools": "tools", "__end__": "format_output"})
-        workflow.add_edge("tools", "agent")
-        workflow.add_edge("format_output", END)
-
-        return workflow.compile()
+            return json.dumps(payload) if payload else "No incidents crossed the 0.65 relevance threshold."
+            
+        except Exception as e:
+            logger.error(f"Hybrid search DB failure for {asset_category}: {e}", exc_info=True)
+            return f"Database Error: {str(e)}"
 
     async def evaluate_anomaly(self, event: AnomalyEvent) -> Dict[str, Any]:
         """Async entry point for webhook and API handlers."""
         logger.info(f"Triggering Failure Intelligence for {event.asset_category}")
         
-        initial_payload = (
-            f"New Anomaly Logged -> Category: {event.asset_category} | "
-            f"Symptoms: {event.current_symptoms} | Severity: {event.severity}"
-        )
-
         try:
-            # Hard limit protects against hallucination-induced infinite loops
-            run_config = {"recursion_limit": 5}
+            # 1. Generate vector representation of the symptom (CPU-bound, threaded)
+            query_vector = await self._generate_embedding_async(event.current_symptoms)
             
-            output_state = await self.graph.ainvoke(
-                {"messages": [HumanMessage(content=initial_payload)]},
-                config=run_config
+            # 2. Fetch highly correlated historical incidents (I/O-bound, async)
+            historical_context = await self._fetch_similar_incidents(
+                event.asset_category, 
+                query_vector, 
+                limit=3
             )
             
-            final_json = output_state["messages"][-1].content
-            return {"status": "SUCCESS", "alert": final_json}
+            # 3. Construct deterministic prompt payload
+            synthesis_payload = (
+                f"New Anomaly Logged:\n"
+                f"Category: {event.asset_category}\n"
+                f"Symptoms: {event.current_symptoms}\n"
+                f"Severity: {event.severity}\n\n"
+                f"--- HISTORICAL MATCHES (Similarity > 0.65) ---\n"
+                f"{historical_context}\n\n"
+                f"Extract the predictive intelligence strictly into the required JSON schema."
+            )
+
+            messages = [
+                SystemMessage(content=self.system_prompt),
+                HumanMessage(content=synthesis_payload)
+            ]
             
-        except GraphRecursionError:
-            logger.error(f"Intelligence graph recursion limit hit for {event.asset_category}.")
-            return {
-                "status": "PARTIAL_SUCCESS", 
-                "alert": '{"error": "Agent iteration limits breached. Review telemetry manually."}'
-            }
+            # 4. Single pass LLM synthesis
+            structured_payload: ProactiveAlertSchema = await self.structured_llm.ainvoke(messages)
+            
+            return {"status": "SUCCESS", "alert": structured_payload.model_dump()}
+            
         except Exception as e:
             logger.critical(f"Intelligence Engine Panicked: {e}", exc_info=True)
             return {
                 "status": "FATAL", 
-                "alert": f'{{"error": "Execution failure: {str(e)}"}}'
+                "alert": {"error": f"Execution failure: {str(e)}"}
             }
