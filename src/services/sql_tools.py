@@ -41,11 +41,6 @@ async def fetch_postgres_incidents_async(asset_id: str, scan_limit: int = 5) -> 
         return f"Error executing relational search execution sequence: {str(e)}"
 
 
-import logging
-from src.parsers import generate_vector_async 
-from src.db.neo4j_client import Neo4jClient
-
-logger = logging.getLogger(__name__)
 
 async def fetch_neo4j_procedures_async(asset_type: str, symptom_vector: List[float]) -> str:
     """

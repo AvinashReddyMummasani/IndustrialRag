@@ -20,12 +20,12 @@ logger = logging.getLogger(__name__)
 MAX_RECURSION_DEPTH = 3
 
 class IngestionPipeline:
-    def __init__(self, task_queue=None, model=None, vision_client=None):
+    def __init__(self, task_queue=None, model=None, vision_client=None,llm=None):
         self.vision_parser = VisionParser(embedding_model=model, vision_model_client=vision_client)
         self.semantic_parser = SemanticParser(embedding_model=model)
-        self.digital_text_parser = DigitalTextParser(model=model)
-        self.email_parser = EmailParser(model=model)
-        self.spreadsheet_parser = SpreadsheetParser(embedding_model=model)
+        self.digital_text_parser = DigitalTextParser(embedding_model=model,llm=llm)
+        self.email_parser = EmailParser(model=model,llm=llm)
+        self.spreadsheet_parser = SpreadsheetParser(embedding_model=model,llm=llm)
         
         self.pdf_orchestrator = DocumentOrchestrator(
             parsers=[self.vision_parser, self.semantic_parser, self.digital_text_parser], 

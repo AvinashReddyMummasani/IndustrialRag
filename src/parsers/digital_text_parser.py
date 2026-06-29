@@ -27,7 +27,7 @@ class ExtractionPayload(BaseModel):
     relationships: List[EntityRelationship]
 
 class DigitalTextParser(BaseParser):
-    def __init__(self, llm_model: str = "llama3-70b-8192", embedding_model = None):
+    def __init__(self, embedding_model = None,llm=None):
         """
         Initializes parser. Expects explicit definition of both the generative LLM
         and the embedding model to prevent namespace collisions.
@@ -35,7 +35,7 @@ class DigitalTextParser(BaseParser):
         # Pass the primary execution model to the base class if required
         super().__init__(embedding_model) 
         
-        self.llm_model = llm_model
+        self.llm_model = llm
         self.embedding_model = embedding_model
         
         api_key = os.environ.get("GROQ_API_KEY")

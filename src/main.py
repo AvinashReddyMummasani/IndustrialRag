@@ -62,14 +62,16 @@ async def lifespan(app: FastAPI):
             temperature=0.0, 
             max_retries=3
         )
+        heavy_llm = "llama-3.3-70b-versatile"
+        light_llm ="llama-3.1-8b-instant"
 
-        app.state.pipeline = IngestionPipeline(model=embedding_model, vision_client=vision_client)
-        app.state.incident_pipeline = IncidentDataPipeline(embedding_model=embedding_model)
+        app.state.pipeline = IngestionPipeline(model=embedding_model, vision_client=vision_client,llm=heavy_llm)
+        app.state.incident_pipeline = IncidentDataPipeline(embedding_model=embedding_model,llm=heavy_llm)
         
-        app.state.copilot = KnowledgeCopilot(embedding_model=embedding_model)
-        app.state.rca_engine = IndustrialRCAEngine(embedding_model=embedding_model)
-        app.state.compliance_engine = RegulatoryComplianceEngine()
-        app.state.intelligence_engine = FailureIntelligenceEngine(embedding_model=embedding_model)
+        app.state.copilot = KnowledgeCopilot(embedding_model=embedding_model,llm=heavy_llm)
+        app.state.rca_engine = IndustrialRCAEngine(embedding_model=embedding_model,llm=heavy_llm)
+        app.state.compliance_engine = RegulatoryComplianceEngine(llm=heavy_llm)
+        app.state.intelligence_engine = FailureIntelligenceEngine(embedding_model=embedding_model,llm=heavy_llm)
         
         logger.info("ML Models, ETL Pipelines, and Agents attached to application state.")
     except Exception as e:

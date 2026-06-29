@@ -35,7 +35,7 @@ class EmailGraphExtraction(BaseModel):
     )
 
 class EmailParser(BaseParser):
-    def __init__(self, extract_dir: Path = Path("./temp_uploads"),model=None):
+    def __init__(self, extract_dir: Path = Path("./temp_uploads"),model=None,llm=None):
         super().__init__(model)
         
         self.resolver = EntityResolver()
@@ -46,7 +46,7 @@ class EmailParser(BaseParser):
         
         # Guardrails
         self.max_body_chars = 10000 
-        self.extraction_model = "llama3-8b-8192"
+        self.extraction_model = llm
         
         self.extract_dir = extract_dir # Extract into temp uploads
         self.extract_dir.mkdir(parents=True, exist_ok=True)

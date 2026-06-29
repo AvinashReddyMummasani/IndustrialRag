@@ -33,12 +33,12 @@ class IndustrialRCAEngine:
     Optimized for strict schema adherence and minimized Time-To-First-Token (TTFT).
     """
     
-    def __init__(self,embedding_model):
+    def __init__(self,embedding_model,llm : str = "llama-3.3-70b-versatile"):
         self.resolver = EntityResolver()
         
         # Bind the LLM directly to the JSON schema. No tool-calling loops required.
         self.llm = ChatGroq(
-            model="llama-3.3-70b-versatile", 
+            model=llm, 
             temperature=0.0, 
             max_retries=3
         )

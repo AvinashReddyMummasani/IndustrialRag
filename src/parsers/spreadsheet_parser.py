@@ -39,14 +39,14 @@ class ColumnMappingSchema(BaseModel):
     )
 
 class SpreadsheetParser(BaseParser):
-    def __init__(self, embedding_model, llm_client=None, llm_model: str = "llama-3.3-70b-versatile"):
+    def __init__(self, embedding_model, llm_client=None, llm: str = "llama-3.3-70b-versatile"):
         """
         Convert industrial spreadsheet data into Graph data.
         Assuming spreadsheet cols have less unique values and it contain id tags column and 
         devices column.
         """
         super().__init__(embedding_model)
-        self.llm_model = llm_model
+        self.llm_model = llm
         
         # Wrap raw client with instructor
         raw_client = llm_client or Groq(api_key=os.getenv("GROQ_API_KEY"))

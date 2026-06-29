@@ -25,13 +25,13 @@ logger = logging.getLogger(__name__)
 #     retries: int
 
 class KnowledgeCopilot:
-    def __init__(self,embedding_model):
+    def __init__(self,embedding_model,llm : str = "llama-3.3-70b-versatile"):
         raw_client = AsyncGroq(api_key=os.getenv("GROQ_API_KEY"))
         self.client = instructor.from_groq(raw_client, mode=instructor.Mode.TOOLS)
         self.resolver = EntityResolver()
         
         self.embedding_model = embedding_model
-        self.llm_model = "llama3-70b-8192"
+        self.llm_model = llm
         self.max_retries = 3
         
         self.graph = self._compile_workflow()

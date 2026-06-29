@@ -15,11 +15,11 @@ logger = logging.getLogger(__name__)
 class RegulatoryComplianceEngine:
     """Engine for compliance auditing."""
     
-    def __init__(self):
+    def __init__(self,llm=None):
         self.resolver = EntityResolver()
         
         self.llm = ChatGroq(
-            model="llama-3.3-70b-versatile", 
+            model=llm, 
             temperature=0.0,
             max_retries=3
         )

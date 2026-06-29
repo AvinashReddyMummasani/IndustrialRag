@@ -32,7 +32,7 @@
 
 24. In spread sheet parser use custom chunker for making rows intact.
 
-25. CRITICAL Enforce req parsers to create graph data satisfying other agens.
+25. CRITICAL Enforce req parsers to create graph data satisfying other agents.
 
 
 ## Check Complete
