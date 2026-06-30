@@ -1,34 +1,67 @@
 import fitz
 import logging
-import pytesseract
 import base64
-import json
 import re
+import numpy as np
 from PIL import Image
 from io import BytesIO
 from pathlib import Path
-from typing import Union, List, Dict, Any
+from typing import Union, List, Optional
+from enum import Enum
 
+from pydantic import BaseModel, Field, ValidationError
 from langchain_core.messages import HumanMessage
+from rapidocr_onnxruntime import RapidOCR
 
 from src.parsers.base_parser import BaseParser
-from src.core.schemas import ParsedDocumentData, ExtractedEntity
+from src.core.schemas import (
+    ParsedDocumentData, 
+    ExtractedEntity, 
+    EntityRelationship, 
+    EntityType, 
+    RelationType
+)
 
 logger = logging.getLogger(__name__)
+
+# --- Local Routing Schemas ---
+class ImageCategory(str, Enum):
+    PID_DIAGRAM = "PID_DIAGRAM"
+    SCANNED_DOCUMENT = "SCANNED_DOCUMENT"
+    IRRELEVANT = "IRRELEVANT"
+
+class ImageRoutingDecision(BaseModel):
+    category: ImageCategory = Field(
+        description="Classify the image. P&IDs have vector lines and equipment nodes. Scanned documents have dense paragraphs of text. If unreadable, select IRRELEVANT."
+    )
+
+class TopologicalMapping(BaseModel):
+    """Root container required for LangChain structured output tool binding."""
+    entities: List[ExtractedEntity] = Field(
+        default_factory=list,
+        description="List of all physical assets, personnel, systems, or regulations explicitly identified in the image. Do not leave this empty if relationships exist."
+    )
+    relationships: List[EntityRelationship] = Field(
+        default_factory=list,
+        description="List of all physical connections, flows, or semantic relationships extracted from the image."
+    )
 
 class VisionParser(BaseParser):
     """
     Handles unstructured image data, CAD drawings, and P&ID diagrams.
-    Utilizes local OCR for entity extraction and Groq Vision for topological mapping.
+    Utilizes ONNX-based RapidOCR for baseline text and a 2-pass Vision LLM architecture to extract full semantic graphs.
     """
     
     def __init__(self, embedding_model, vision_model_client=None):
         super().__init__(embedding_model)
         self.vision_client = vision_model_client
         self.valid_extensions = {'.png', '.jpg', '.jpeg', '.tiff', '.tif', '.bmp'}
+        
+        # Load the ONNX model into memory once per worker instance
+        logger.info("Initializing ONNX RapidOCR Engine in memory...")
+        self.ocr_engine = RapidOCR()
 
     def can_handle(self, input_target: Union[Path, fitz.Page]) -> bool:
-        """Evaluates both raw file paths and pre-loaded PDF pages for vision suitability."""
         if isinstance(input_target, Path):
             return input_target.suffix.lower() in self.valid_extensions
             
@@ -43,12 +76,10 @@ class VisionParser(BaseParser):
         return False
 
     def _extract_image_from_target(self, target: Union[Path, fitz.Page]) -> Image.Image:
-        """Standardizes inputs into a PIL Image for OCR and Vision processing."""
         if isinstance(target, Path):
             return Image.open(target)
             
         if isinstance(target, fitz.Page):
-            # 144 DPI scaling for OCR clarity
             zoom_matrix = fitz.Matrix(2.0, 2.0)
             pix = target.get_pixmap(matrix=zoom_matrix)
             img_data = pix.tobytes("png")
@@ -57,124 +88,159 @@ class VisionParser(BaseParser):
         raise ValueError("Unsupported target type for image extraction.")
 
     def _perform_baseline_ocr(self, image: Image.Image) -> str:
-        """Executes local OCR to capture explicit text (Equipment Tags, Line Numbers)."""
         try:
-            # PSM 11 is optimized for sparse text scattered across a diagram
-            # It Automatically uses best ocr --oem 3 and --psm 11 sparse text
-            custom_config = r'--oem 3 --psm 11'
-            text = pytesseract.image_to_string(image, config=custom_config)
-            return text.strip()
+            # RapidOCR requires a NumPy array. Convert explicitly to RGB.
+            img_array = np.array(image.convert('RGB'))
+            
+            # Execute ONNX inference
+            result, _ = self.ocr_engine(img_array)
+            
+            if not result:
+                return ""
+            
+            # Result format: list of tuples [([[x1,y1],...], "text", confidence)]
+            extracted_text = " ".join([block[1] for block in result])
+            return extracted_text.strip()
+            
         except Exception as e:
-            logger.error(f"Tesseract OCR failure: {e}")
+            logger.error(f"RapidOCR execution failure: {e}")
             return ""
 
     def _extract_entities_via_heuristics(self, raw_text: str) -> List[ExtractedEntity]:
-        """Extracts standard industrial tags using regex on the OCR output."""
         entities = []
-        # Standard industrial tag pattern (e.g., P-101, V-200A, TK-99)
+        if not raw_text:
+            return entities
+            
         tag_pattern = re.compile(r'\b([A-Z]{1,3}-\d{2,4}[A-Z]?)\b')
         found_tags = tag_pattern.findall(raw_text)
         
         for tag in set(found_tags):
             prefix = tag.split('-')[0]
-            # Assuming currently diagram contain only Valve, Pump or Other equipments
-            entity_type = "VALVE" if prefix == "V" else "PUMP" if prefix == "P" else "EQUIPMENT"
-            entities.append(ExtractedEntity(entity_id=tag, entity_type=entity_type))
+            category = EntityType.COMPONENT if prefix == "V" else EntityType.EQUIPMENT if prefix == "P" else EntityType.UNKNOWN
+            
+            entities.append(
+                ExtractedEntity(
+                    entity_id=tag,
+                    entity_type=category,
+                    properties={"raw_mention": tag, "source": "local_ocr_heuristic"},
+                    confidence=0.9
+                )
+            )
             
         return entities
 
-    def _extract_topological_relationships(self, pil_image: Image.Image, document_id: str) -> List[Dict[str, Any]]:
-        """
-        Pipes the diagram to the Groq Vision model to map physical connections.
-        Forces the model to return structured JSON.
-        """
+    def _extract_vision_graph_data(self, pil_image: Image.Image, document_id: str) -> Optional[TopologicalMapping]:
         if not self.vision_client:
             logger.warning(f"[{document_id}] No vision client injected. Skipping topology mapping.")
-            return []
+            return None
 
         try:
-            # Compress and encode the image for API transit
+            # 1. Rasterize payload
             buffered = BytesIO()
-            # Convert to RGB to prevent alpha channel errors during JPEG compression
             if pil_image.mode in ("RGBA", "P"):
                 pil_image = pil_image.convert("RGB")
                 
-            pil_image.save(buffered, format="JPEG", quality=85) # Convert into file type
+            pil_image.save(buffered, format="JPEG", quality=85)
             img_str = base64.b64encode(buffered.getvalue()).decode("utf-8")
-            
-            prompt_text = (
-                "You are an expert industrial P&ID drafter. Analyze this engineering diagram. "
-                "Identify the physical connections between equipment tags (e.g., P-101 connects to V-204). "
-                "Return ONLY a valid JSON list of objects with 'source', 'target', and 'relation' keys. "
-                "The relation should describe the connection type (e.g., 'PIPED_TO', 'CONTROLS'). "
-                "Do not include markdown blocks, just the raw JSON array."
-            )
+            image_payload = {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{img_str}"}}
 
-            message = HumanMessage(
-                content=[
-                    {"type": "text", "text": prompt_text},
-                    {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{img_str}"}}
-                ]
+            # 2. Phase 1: High-Speed Classification Routing
+            router_prompt = (
+                "You are an industrial image classifier. Look at this image and categorize it strictly. "
+                "Output PID_DIAGRAM if it shows pipes, valves, and topological connections. "
+                "Output SCANNED_DOCUMENT if it is mostly text, permits, or manuals. "
+                "Output IRRELEVANT if it is a blank page or unreadable."
             )
             
-            response = self.vision_client.invoke([message])
-            raw_output = response.content.strip()
+            route_msg = HumanMessage(content=[{"type": "text", "text": router_prompt}, image_payload])
+            router_llm = self.vision_client.with_structured_output(ImageRoutingDecision)
+            decision: ImageRoutingDecision = router_llm.invoke([route_msg])
             
-            # Clean potential markdown formatting from LLM output
-            if raw_output.startswith("```json"):
-                raw_output = raw_output.replace("```json", "").replace("```", "").strip()
-            elif raw_output.startswith("```"):
-                raw_output = raw_output.replace("```", "").strip()
+            logger.info(f"[{document_id}] Vision Router classified image as: {decision.category.value}")
 
-            relationships = json.loads(raw_output)
+            if decision.category == ImageCategory.IRRELEVANT:
+                logger.info(f"[{document_id}] Image deemed irrelevant. Bypassing heavy extraction.")
+                return None
+
+            # 3. Phase 2: Targeted Extraction Setup
+            valid_relations = [r.value for r in RelationType]
             
-            if not isinstance(relationships, list):
-                logger.error(f"[{document_id}] Vision model returned non-list JSON.")
-                return []
-                
-            return relationships
+            if decision.category == ImageCategory.PID_DIAGRAM:
+                extraction_prompt = (
+                    "You are an expert industrial P&ID drafter. Extract the entire topological network from this diagram. "
+                    "Explicitly define ALL equipment tags, components, and nodes in the 'entities' array. "
+                    "Explicitly define the physical pipe/wire connections in the 'relationships' array. "
+                    f"CRITICAL CONSTRAINT: 'relation_type' MUST strictly map to one of these values: {', '.join(valid_relations)}. "
+                    "Do not generate conversational text."
+                )
+            else:
+                extraction_prompt = (
+                    "You are an industrial data extractor. Read this scanned safety/administrative document. "
+                    "1. Extract ALL mentioned systems, personnel, parameters, permits, and equipment as 'entities'. "
+                    "2. ANOMALY DETECTION: If there are handwritten notes or text indicating failures, glitches, or injuries (e.g., 'heat stress', 'sensor glitch'), explicitly extract them as INCIDENT entities. "
+                    "3. Define their functional or administrative connections in the 'relationships' array. "
+                    "4. GRAPH MATH CONSTRAINT: Pay strict attention to edge directionality. Equipment POSSESSES parameters (e.g., source: Equipment -> target: Parameter). Personnel PERFORM actions on equipment. Do not reverse source_id and target_id. "
+                    f"CRITICAL CONSTRAINT: 'relation_type' MUST strictly map to one of these values: {', '.join(valid_relations)}. "
+                    "Do not generate conversational text."
+                )
 
-        except json.JSONDecodeError as e:
-            logger.error(f"[{document_id}] Failed to parse Vision model JSON output: {e}\nRaw output: {raw_output}")
-            return []
+            # 4. Phase 3: Heavy Structured Extraction (Nodes & Edges)
+            extraction_msg = HumanMessage(content=[{"type": "text", "text": extraction_prompt}, image_payload])
+            extractor_llm = self.vision_client.with_structured_output(TopologicalMapping)
+            result: TopologicalMapping = extractor_llm.invoke([extraction_msg])
+            
+            return result
+
+        except ValidationError as e:
+            logger.error(f"[{document_id}] Vision model hallucinated outside schema constraints:\n{e}")
+            return None
         except Exception as e:
-            logger.error(f"[{document_id}] Vision API network/execution failure: {e}")
-            return []
+            logger.error(f"[{document_id}] Vision API network or execution failure: {e}")
+            return None
 
     def parse(self, input_target: Union[Path, fitz.Page], document_id: str) -> ParsedDocumentData:
-        """Orchestrates the full rasterization, OCR, and VLM pipeline."""
         logger.info(f"[{document_id}] VisionParser initiated...")
         
         try:
             # 1. Rasterize
             pil_image = self._extract_image_from_target(input_target)
             
-            # 2. Local OCR Extraction
+            # 2. Extract Baseline Local Nodes (ONNX OCR + Heuristics)
             raw_text = self._perform_baseline_ocr(pil_image)
-            entities = self._extract_entities_via_heuristics(raw_text)
+            heuristic_entities = self._extract_entities_via_heuristics(raw_text)
             
-            # 3. Vision API Topology Mapping
-            relationships = self._extract_topological_relationships(pil_image, document_id)
+            # 3. Extract Deep Graph (Vision API 2-Pass Router)
+            vision_result = self._extract_vision_graph_data(pil_image, document_id)
             
-            logger.info(f"[{document_id}] Vision extraction complete. Entities: {len(entities)}, Relationships: {len(relationships)}")
+            vision_entities = vision_result.entities if vision_result else []
+            vision_relationships = vision_result.relationships if vision_result else []
             
+            # 4. Merge & Deduplicate (Preventing the Orphaned Node problem)
+            combined_entities = heuristic_entities + vision_entities
+            
+            unique_entities = {e.entity_id: e for e in combined_entities}.values()
+            unique_relations = {f"{r.source_id}-{r.relation_type}-{r.target_id}": r for r in vision_relationships}.values()
+            
+            logger.info(f"[{document_id}] Extraction complete. Unique Nodes: {len(unique_entities)}, Unique Edges: {len(unique_relations)}")
+            
+            # 5. Embeddings
             embeddings = []
-            chunks = self.chunk_text(raw_text) 
-        
+            chunks = self.chunk_text(raw_text) if hasattr(self, 'chunk_text') else []
             
             if hasattr(self, 'embedding_model') and self.embedding_model and chunks:
                 try:
-
                     embeddings = self.embedding_model.encode(chunks).tolist()
                 except Exception as e:
                     logger.error(f"[{document_id}] Failed to generate text embeddings: {e}")
+                    
             return ParsedDocumentData(
                 document_id=document_id,
                 route_taken="VISION_TOPOLOGICAL",
                 raw_text=raw_text,
+                text_chunks=chunks,
                 embeddings=embeddings,
-                entities=entities,
-                relationships=relationships
+                entities=list(unique_entities),
+                relationships=list(unique_relations)
             )
             
         except Exception as e:

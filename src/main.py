@@ -3,11 +3,13 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from dotenv import load_dotenv
+import asyncio
 
 load_dotenv()
 
 from src.db.postgres_client import PostgresPool
 from src.db.neo4j_client import Neo4jClient
+from src.etl.neo4j_outbox_worker import process_pending_jobs
 
 from src.api import (
     ingestion_router, 
@@ -58,7 +60,7 @@ async def lifespan(app: FastAPI):
         logger.info("Initializing Vision API Client...")
     
         vision_client = ChatGroq(
-            model="llama-3.2-90b-vision-preview", 
+            model="meta-llama/llama-4-scout-17b-16e-instruct", 
             temperature=0.0, 
             max_retries=3
         )
@@ -66,7 +68,7 @@ async def lifespan(app: FastAPI):
         light_llm ="llama-3.1-8b-instant"
 
         app.state.pipeline = IngestionPipeline(model=embedding_model, vision_client=vision_client,llm=heavy_llm)
-        app.state.incident_pipeline = IncidentDataPipeline(embedding_model=embedding_model,llm=heavy_llm)
+        app.state.incident_pipeline = IncidentDataPipeline(embedding_model=embedding_model)
         
         app.state.copilot = KnowledgeCopilot(embedding_model=embedding_model,llm=heavy_llm)
         app.state.rca_engine = IndustrialRCAEngine(embedding_model=embedding_model,llm=heavy_llm)
@@ -77,24 +79,45 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.critical(f"Failed to instantiate system pipelines: {e}")
         raise RuntimeError("Halting boot sequence due to pipeline load failure.") from e
+    
+    logger.info("Starting Neo4j outbox worker...")
+    # Bind using a consistent namespace
+    app.state.outbox_worker = asyncio.create_task(process_pending_jobs(PostgresPool.get_pool()))
+    logger.info("Neo4j outbox worker started.")
 
     yield 
 
     logger.info("Initiating graceful shutdown sequence...")
     try:
+        # 1. Terminate background workers FIRST
+        if hasattr(app.state, "outbox_worker"):
+            app.state.outbox_worker.cancel()
+            try:
+                await asyncio.wait_for(app.state.outbox_worker, timeout=5.0)
+                logger.info("Neo4j Outbox Worker stopped gracefully.")
+            except asyncio.CancelledError:
+                logger.info("Neo4j Outbox Worker cancelled cleanly.")
+            except asyncio.TimeoutError:
+                logger.warning("Neo4j Outbox Worker shutdown timed out. Forcing termination.")
+        
+        # 2. Teardown Database Connections LAST
+        logger.info("Closing Neo4j async driver...")
         await Neo4jClient.close()
         logger.info("Neo4j async driver closed.")
         
         if hasattr(PostgresPool, '_pool') and PostgresPool._pool:
+            logger.info("Closing PostgreSQL asyncpg connection pool...")
             await PostgresPool._pool.close()
             logger.info("PostgreSQL asyncpg connection pool closed.")
     
+        # 3. Clear application state memory
         app.state.pipeline = None
         app.state.incident_pipeline = None
         app.state.copilot = None
         app.state.rca_engine = None
         app.state.compliance_engine = None
         app.state.intelligence_engine = None
+        app.state.outbox_worker = None
             
     except Exception as e:
         logger.error(f"Error encountered during connection teardown: {e}")

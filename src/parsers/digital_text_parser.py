@@ -1,6 +1,6 @@
 import os
 import logging
-from typing import List
+from typing import List, Union
 from pathlib import Path
 import fitz
 from groq import Groq
@@ -52,12 +52,30 @@ class DigitalTextParser(BaseParser):
             "You must adhere strictly to the allowed taxonomies for entity_type and relation_type."
         )
 
-    def can_handle(self, file_path: Path) -> bool:
-        return file_path.suffix.lower() == '.pdf'
+    def can_handle(self, input_target: Union[Path, fitz.Page]) -> bool:
+            if isinstance(input_target, Path):
+                return input_target.suffix.lower() == '.pdf'
+                
+            if isinstance(input_target, fitz.Page):
+                try:
+                    # Claim the page if it has sufficient digital text to bypass OCR
+                    text = input_target.get_text("text").strip()
+                    return len(text) >= 200
+                except Exception as e:
+                    logger.error(f"Failed to evaluate page for DigitalTextParser: {e}")
+                    return False
+                    
+            return False
+            
+
+    def parse(self, page:  Union[Path, fitz.Page], page_id: str) -> ParsedDocumentData:
         
 
-    def parse(self, page: fitz.Page, page_id: str) -> ParsedDocumentData:
-        raw_text = page.get_text("text").strip()
+        if isinstance(page, Path):
+            with open(page,'r') as f : # for text files
+                raw_text =f.read()
+        else:
+            raw_text = page.get_text("text").strip()
         
         if not raw_text:
             logger.warning(f"[{page_id}] Empty page. Bypassing extraction.")
@@ -80,7 +98,7 @@ class DigitalTextParser(BaseParser):
             extracted_data: ExtractionPayload = self.client.chat.completions.create(
                 model=self.llm_model,
                 response_model=ExtractionPayload,
-                max_retries=2,
+                max_retries=3,
                 messages=[
                     {"role": "system", "content": self.system_prompt},
                     {"role": "user", "content": raw_text}

@@ -97,7 +97,7 @@ class SemanticParser(BaseParser):
         # Safely execute embeddings utilizing the BaseParser's stored model
         if hasattr(self, 'embedding_model') and self.embedding_model and chunks:
             try:
-                # Using standard sentence-transformers execution
+                
                 embeddings = self.embedding_model.encode(chunks).tolist()
             except Exception as e:
                 logger.error(f"[{document_id}] Failed to generate text embeddings: {e}")
@@ -108,6 +108,6 @@ class SemanticParser(BaseParser):
             raw_text=raw_extracted_text,
             text_chunks=chunks,
             embeddings=embeddings,
-            entities=[],  # Graph extraction relies on the LLM phase later in the pipeline
+            entities=[],
             relationships=[]
         )

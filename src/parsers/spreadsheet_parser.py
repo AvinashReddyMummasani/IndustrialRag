@@ -14,29 +14,13 @@ from src.core.schemas import (
     ExtractedEntity, 
     EntityRelationship,
     EntityType,
-    RelationType
+    RelationType,
+    ColumnMappingSchema
 )
 
 logger = logging.getLogger(__name__)
 
-class ColumnMappingSchema(BaseModel):
-    """Structured schema mapping arbitrary spreadsheet structures to Graph Taxonomies."""
-    id_column: str = Field(description="The header name containing unique identifiers/tags (e.g., P-101).")
-    type_column: str = Field(description="The header name identifying what the row/item is.")
-    
-    # Value mapping dictionary to bridge arbitrary spreadsheet terminology to strict Graph Enums
-    type_value_mappings: Dict[str, EntityType] = Field(
-        description="A dictionary mapping unique raw values from the type_column to valid EntityType enums."
-    )
-    
-    source_column: Optional[str] = Field(default=None, description="Header for source node connections.")
-    target_column: Optional[str] = Field(default=None, description="Header for target node connections.")
-    relation_type_column: Optional[str] = Field(default=None, description="Header for relation types.")
-    
-    relation_value_mappings: Dict[str, RelationType] = Field(
-        default_factory=dict,
-        description="A dictionary mapping unique raw values from the relation_type_column to valid RelationType enums."
-    )
+
 
 class SpreadsheetParser(BaseParser):
     def __init__(self, embedding_model, llm_client=None, llm: str = "llama-3.3-70b-versatile"):

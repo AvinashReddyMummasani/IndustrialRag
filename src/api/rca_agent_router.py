@@ -15,7 +15,7 @@ def resolve_rca_engine(request: Request) -> IndustrialRCAEngine:
     return request.app.state.rca_engine
 
 @router.post("/root-cause-analysis", response_model=APIWebResponse)
-def compute_root_cause_matrix(
+async def compute_root_cause_matrix(
     payload: RCADiagnosticInput,
     engine: IndustrialRCAEngine = Depends(resolve_rca_engine)
 ):
@@ -23,7 +23,7 @@ def compute_root_cause_matrix(
     Ingests live engineering system failure tokens, fetches cross-sectional records 
     from PostgreSQL and Neo4j, and returns a verified engineering safety directive.
     """
-    execution_result = engine.execute_rca_evaluation(payload)
+    execution_result = await engine.execute_rca_evaluation(payload)
     
     if execution_result["status"] == "FATAL":
         raise HTTPException(status_code=500, detail=execution_result["report"])

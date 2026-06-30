@@ -3,7 +3,7 @@ import json
 import pathlib
 import logging
 import asyncio
-from typing import Dict, Any, Optional
+from typing import Optional
 
 from src.core.schemas import ParsedDocumentData
 from src.db.postgres_client import PostgresPool
@@ -37,6 +37,7 @@ class IngestionPipeline:
         
         self.routes = {
             "application/pdf": self.pdf_orchestrator.parse_document,
+            "text/plain": self.digital_text_parser.parse,
             
             "image/png": self.vision_parser.parse,
             "image/jpeg": self.vision_parser.parse,
@@ -124,6 +125,7 @@ class IngestionPipeline:
                 parsed_data = await asyncio.to_thread(handler, file_path, file_id)
             
             if parsed_data:
+                logger.info(f"Used {parsed_data.route_taken}")
                 await self._write_to_database(parsed_data, filename, mime_type, parent_id)
                 logger.info(f"Successfully processed document {file_id} ({filename})")
             

@@ -10,11 +10,10 @@
    relatioins and little summary (chunk it too and make embeddings) with structured vision_client. ***
 8. In semantic_parser try to use custom_model instead of pyteseract (Can be used in VisionParer too).
 9. Make a own chunking method for spreadsheets to make it row aware.
-10. Check spreadsheets, archive parser again. ***********
+
 11. Learn rapidfuzz.
 12. If possible in sql_tools/_fetch_neo4j_procedures_sync change exact_match.
-13. While building Graph strict enforce it to have schema required for compliance agent
-    and rca agent. *********
+
 15. In intelligenc_router add other router or service as soon as user request is finished it should be sent to user.
 16. RCA should use real TIME data too. ***** (etl,timescale db)
 
@@ -26,13 +25,9 @@
 
 21. In knowledge copilot missing retry for grade_context and on errors it is directly going to next node.
 
-22. CRITICAl in file classifier data is not writtten int neo4j in last _write_to_db method.
-
-23. CRITICAL for all parsers parsing garaph data make sure to resolve them using entity parser.
 
 24. In spread sheet parser use custom chunker for making rows intact.
 
-25. CRITICAL Enforce req parsers to create graph data satisfying other agents.
 
 
 ## Check Complete
@@ -92,8 +87,14 @@
 
 12. Using vector search in neo4j.
 
+13. pyteceract is external.
+
+14. vision_parser changed.
+
 ## Final optimizations
 1. Interpret what happens on scale write its impact and
    how application takes care of it. (business impact).
 
 2. while inserting data into graph try to push embeddings in formate.
+
+3. wrap llm invokein tenacity.

@@ -18,21 +18,12 @@ from src.core.schemas import (
     ExtractedEntity, 
     EntityRelationship,
     EntityType,
-    RelationType
+    RelationType,
+    EmailGraphExtraction
 )
 
 logger = logging.getLogger(__name__)
 
-class EmailGraphExtraction(BaseModel):
-    """Root schema for instructor to enforce structured graph extraction."""
-    entities: List[ExtractedEntity] = Field(
-        default_factory=list,
-        description="List of entities found in the email body."
-    )
-    relationships: List[EntityRelationship] = Field(
-        default_factory=list,
-        description="Topological or semantic connections, including those linking the sender/receiver to equipment."
-    )
 
 class EmailParser(BaseParser):
     def __init__(self, extract_dir: Path = Path("./temp_uploads"),model=None,llm=None):
